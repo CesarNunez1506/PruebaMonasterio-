@@ -1,15 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { FiFilter, FiSearch, FiPlus, FiTrash2, FiEdit, FiAlertTriangle, FiCalendar } from 'react-icons/fi';
 import { useFetchAllLost, useCreateLost, useDeleteLost } from '@/modules/production/hook/useLost';
 import { lostSchema } from '@/modules/production/schemas/lostValidation';
 import { CreateLostPayload } from '@/modules/production/types/lost';
 import { toast } from 'react-toastify';
 import { useFetchProductions } from '../../hook/useProductions';
+import { useFetchProducts } from '../../hook/useProducts';
 
 const LostComponentView: React.FC = () => {
   // Obtener datos usando los hooks
   const { data: lostData = [], isLoading, error } = useFetchAllLost();
   const { data: productions = [], isLoading: loadingProducts } = useFetchProductions();
+  const { data: productsData = [], isLoading: isLoadingProducts, error: errorProducts } = useFetchProducts();
   const createLostMutation = useCreateLost();
   const deleteLostMutation = useDeleteLost();
 
@@ -30,22 +32,45 @@ const LostComponentView: React.FC = () => {
     observations: '',
   });
 
-  // Obtener nombre completo del producto para mostrar
-  const getProductionDisplay = (productionId: string) => {
-    const production = productions.find(p => p.id === productionId);
-    if (!production) return productionId;
-    // Si productId es un string, deberías buscar el producto por ID, pero según tu types, parece que es un objeto o tiene un campo name
-    // Si no, ajusta esto según tu estructura real
-    const productName = (production.productId as any)?.name || production.productId || 'Producto';
-    const prodDate = production.productionDate
-      ? new Date(production.productionDate).toLocaleDateString()
-      : '';
-    return `${productName} ${prodDate}`;
+  const productionDisplayStrings = useMemo(() => {
+    if (isLoading || loadingProducts || isLoadingProducts) {
+      return new Map<string, string>();
+    }
+
+    const dateCounts = new Map<string, number>();
+    const displayStrings = new Map<string, string>();
+
+    lostData.forEach(lost => {
+      const production = productions.find(p => p.id === lost.production_id);
+      if (production) {
+        const product = productsData.find(prod => prod.id === production.productId);
+        if (product) {
+          const productName = product.name;
+          const prodDate = production.productionDate
+            ? new Date(production.productionDate).toLocaleDateString()
+            : '';
+          const key = `${productName} ${prodDate}`;
+          const currentCount = (dateCounts.get(key) || 0) + 1;
+          dateCounts.set(key, currentCount);
+          displayStrings.set(lost.id, `${key} (${currentCount})`);
+        } else {
+          displayStrings.set(lost.id, `Producto no encontrado para producción ${lost.production_id}`);
+        }
+      } else {
+        displayStrings.set(lost.id, `Producción no encontrada: ${lost.production_id}`);
+      }
+    });
+    return displayStrings;
+  }, [lostData, productions, productsData, isLoading, loadingProducts, isLoadingProducts]);
+
+  const getProductionDisplay = (lostId: string) => {
+    return productionDisplayStrings.get(lostId) || 'ID de pérdida no encontrado'; // Fallback
   };
   
   // Filtrar datos
   const filteredData = lostData.filter(item => {
-    const productName = getProductionDisplay(item.production_id).toLowerCase();
+    const displayString = productionDisplayStrings.get(item.id) || '';
+    const productName = displayString.toLowerCase();
     const matchesSearch = productName.includes(searchTerm.toLowerCase()) || 
                          item.observations?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesType = selectedType === 'all' || item.lost_type === selectedType;
@@ -109,8 +134,9 @@ const LostComponentView: React.FC = () => {
     setEndDate('');
   };
 
-  if (isLoading) return <div className="p-4">Cargando datos de pérdidas...</div>;
-  if (error) return <div className="p-4 text-red-500">Error: {error.message}</div>;
+  if (isLoading || loadingProducts || isLoadingProducts) return <div className="p-4">Cargando datos...</div>;
+  if (error) return <div className="p-4 text-red-500">Error al cargar pérdidas: {error.message}</div>;
+  if (errorProducts) return <div className="p-4 text-red-500">Error al cargar productos: {errorProducts.message}</div>;
 
   return (
     <div className="space-y-6 p-4 bg-white rounded-lg shadow-md">
@@ -240,7 +266,7 @@ const LostComponentView: React.FC = () => {
               filteredData.map((lost) => (
                 <tr key={lost.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {getProductionDisplay(lost.production_id)}
+                    {getProductionDisplay(lost.id)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
@@ -304,10 +330,10 @@ const LostComponentView: React.FC = () => {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Produccion *</label>
-                  {loadingProducts ? (
-                    <div className="text-sm text-gray-500">Cargando productos...</div>
+                  {(loadingProducts || isLoadingProducts) ? (
+                    <div className="text-sm text-gray-500">Cargando producciones/productos...</div>
                   ) : productions.length === 0 ? (
-                    <div className="text-sm text-red-500">No hay productos disponibles</div>
+                    <div className="text-sm text-red-500">No hay producciones disponibles</div>
                   ) : (
                     <div className="relative">
                       <select
@@ -322,10 +348,10 @@ const LostComponentView: React.FC = () => {
                         }}
                         required
                       >
-                      <option value="">Seleccionar producto</option>
+                      <option value="">Seleccionar producción</option>
                       {(showAllProducts ? productions : productions.slice(0, 5)).map(prod => {
-                        // Obtener nombre y fecha
-                        const productName = (prod.productId as any)?.name || prod.productId || 'Producto';
+                        const product = productsData.find(p => p.id === prod.productId);
+                        const productName = product ? product.name : (prod.productId || 'Producto Desconocido');
                         const prodDate = prod.productionDate
                           ? new Date(prod.productionDate).toLocaleDateString()
                           : '';
@@ -388,7 +414,7 @@ const LostComponentView: React.FC = () => {
                 type="button"
                 className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-800 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
                 onClick={handleAddLostItem}
-                disabled={createLostMutation.isPending || loadingProducts}
+                disabled={createLostMutation.isPending || loadingProducts || isLoadingProducts}
               >
                 {createLostMutation.isPending ? 'Guardando...' : 'Guardar'}
               </button>
